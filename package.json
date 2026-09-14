@@ -16,7 +16,8 @@
     "db:migrate": "tsx server/db/migrate.ts",
     "db:seed": "tsx server/db/seed.ts",
     "pages:dev": "wrangler pages dev dist --compatibility-flag=nodejs_compat",
-    "pages:deploy": "wrangler pages deploy dist"
+    "pages:deploy": "wrangler pages deploy dist",
+    "deploy": "wrangler deploy"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
