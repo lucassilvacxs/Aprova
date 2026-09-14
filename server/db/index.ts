@@ -30,20 +30,36 @@ export function initDb(overrideUrl?: string) {
 
   const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
 
+  // Detecção estrita de ambiente Edge / Cloudflare Workers / Serverless
+  const isCloudflareOrEdge =
+    typeof (globalThis as any).WebSocketPair !== 'undefined' ||
+    (typeof navigator !== 'undefined' && navigator.userAgent?.includes('Cloudflare')) ||
+    typeof (globalThis as any).EdgeRuntime !== 'undefined' ||
+    process.env.CF_PAGES === '1';
+
   const isNeonOrServerless =
-    dbUrl && (dbUrl.includes('neon.tech') || process.env.USE_NEON === 'true');
+    Boolean(dbUrl && (dbUrl.includes('neon.tech') || process.env.USE_NEON === 'true')) ||
+    isCloudflareOrEdge;
 
   const useRemotePostgres =
     !isTestEnv &&
+    !isCloudflareOrEdge &&
     process.env.USE_PGLITE !== 'true' &&
     dbUrl &&
     !dbUrl.includes('localhost:5432/aprova_db');
 
   if (isNeonOrServerless) {
-    const neonPool = new NeonPool({ connectionString: dbUrl });
-    poolInstance = neonPool;
-    dbInstance = drizzleNeon(neonPool, { schema });
-    console.log('⚡ Banco de dados: Conectado ao PostgreSQL Serverless (Neon/Cloudflare).');
+    if (dbUrl) {
+      const neonPool = new NeonPool({ connectionString: dbUrl });
+      poolInstance = neonPool;
+      dbInstance = drizzleNeon(neonPool, { schema });
+      console.log('⚡ Banco de dados: Conectado ao PostgreSQL Serverless (Neon/Cloudflare).');
+    } else {
+      // Cloudflare worker sem DATABASE_URL configurada: PGlite em memória (seguro)
+      pgliteInstance = new PGlite();
+      dbInstance = drizzlePglite(pgliteInstance, { schema });
+      console.log('⚡ Banco de dados: PGlite em memória (Cloudflare Worker).');
+    }
   } else if (useRemotePostgres) {
     poolInstance = new Pool({
       connectionString: dbUrl,
@@ -52,57 +68,61 @@ export function initDb(overrideUrl?: string) {
     });
     dbInstance = drizzlePg(poolInstance, { schema });
     console.log('📡 Banco de dados: Conectado ao PostgreSQL remoto via pg.Pool.');
-  } else if (isTestEnv) {
-    // Em ambiente de teste: PostgreSQL em memória ultrarrápido
+  } else if (isTestEnv || isCloudflareOrEdge) {
+    // Em ambiente de teste ou Edge: PostgreSQL em memória ultrarrápido sem filesystem
     pgliteInstance = new PGlite();
     dbInstance = drizzlePglite(pgliteInstance, { schema });
   } else {
-    // Em desenvolvimento local: PostgreSQL persistente em disco (com fallback para memória se edge)
-    const dataDir = path.resolve(process.cwd(), 'data', 'aprova_db');
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-
+    // Em desenvolvimento local Node.js: PostgreSQL persistente em disco
     try {
-      pgliteInstance = new PGlite(dataDir);
-      dbInstance = drizzlePglite(pgliteInstance, { schema });
-      console.log(`📁 Banco de dados: PGlite (PostgreSQL WASM persistente em ${dataDir}).`);
-    } catch (diskErr) {
-      console.warn('⚠️ Falha ao inicializar PGlite em disco, tentando recuperar lock obsoleto...', diskErr);
-      const lockFile = path.resolve(dataDir, 'postmaster.pid');
-      if (fs.existsSync(lockFile)) {
-        try { fs.unlinkSync(lockFile); } catch {}
-      }
-      try {
+      if (typeof fs !== 'undefined' && typeof fs.existsSync === 'function') {
+        const dataDir = path.resolve(process.cwd(), 'data', 'aprova_db');
+        if (!fs.existsSync(dataDir)) {
+          fs.mkdirSync(dataDir, { recursive: true });
+        }
+
+        const lockFile = path.resolve(dataDir, 'postmaster.pid');
+        if (fs.existsSync(lockFile)) {
+          try {
+            fs.unlinkSync(lockFile);
+          } catch {}
+        }
+
         pgliteInstance = new PGlite(dataDir);
         dbInstance = drizzlePglite(pgliteInstance, { schema });
-        console.log(`📁 Banco de dados: PGlite recuperado com sucesso após limpeza de lock.`);
-      } catch (retryErr) {
-        console.error('❌ Falha persistente ao inicializar PGlite em disco, usando fallback:', retryErr);
+        console.log(`📁 Banco de dados: PGlite (PostgreSQL WASM persistente em ${dataDir}).`);
+      } else {
         pgliteInstance = new PGlite();
         dbInstance = drizzlePglite(pgliteInstance, { schema });
       }
+    } catch (diskErr) {
+      console.warn('⚠️ Falha ao inicializar PGlite em disco, usando fallback em memória:', diskErr);
+      pgliteInstance = new PGlite();
+      dbInstance = drizzlePglite(pgliteInstance, { schema });
     }
   }
 
   return dbInstance;
 }
 
-// Limpeza limpa no encerramento do processo
-if (typeof process !== 'undefined' && typeof process.on === 'function') {
-  const cleanShutdown = async () => {
-    if (pgliteInstance) {
-      try {
-        await pgliteInstance.close();
-      } catch {}
-    }
-  };
-  process.once('SIGINT', cleanShutdown);
-  process.once('SIGTERM', cleanShutdown);
+// Limpeza limpa no encerramento do processo em Node.js
+if (
+  typeof process !== 'undefined' &&
+  typeof process.on === 'function' &&
+  typeof (globalThis as any).WebSocketPair === 'undefined'
+) {
+  try {
+    const cleanShutdown = async () => {
+      if (pgliteInstance) {
+        try {
+          await pgliteInstance.close();
+        } catch {}
+      }
+    };
+    process.once('SIGINT', cleanShutdown);
+    process.once('SIGTERM', cleanShutdown);
+  } catch {}
 }
-
-// Inicializa no carregamento do módulo
-initDb();
 
 export const pool = new Proxy({} as any, {
   get(_t, prop) {
