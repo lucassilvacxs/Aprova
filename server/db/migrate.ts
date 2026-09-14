@@ -1,17 +1,15 @@
-import fs from 'fs';
-import path from 'path';
 import { executeRawSql } from './index';
+import { bundledMigrations } from './migrations-bundle';
+
+let isDbReady = false;
+let dbReadyPromise: Promise<void> | null = null;
 
 /**
  * Utilitário de migração automática do APROVA.
- * Executa as migrações SQL geradas pelo Drizzle Kit em ordem.
+ * Executa as migrações SQL compiladas (sem dependência de filesystem/fs),
+ * garantindo compatibilidade total com Cloudflare Workers e ambientes Edge.
  */
 export async function runMigrations() {
-  const drizzleDir = path.resolve(process.cwd(), 'drizzle');
-  if (!fs.existsSync(drizzleDir)) {
-    return;
-  }
-
   // Cria tabela de controle de migrações se não existir
   try {
     await executeRawSql(
@@ -21,35 +19,31 @@ export async function runMigrations() {
       );`
     );
   } catch {
-    // Ignora erro
+    // Ignora se já existir
   }
 
   // Busca migrações já executadas
-  let appliedNames = new Set<string>();
+  const appliedNames = new Set<string>();
   try {
     const res = await executeRawSql('SELECT name FROM "__aprova_migrations";');
     const rows = res?.rows || (Array.isArray(res) && res[0]?.rows ? res[0].rows : []);
     for (const r of rows) {
-      appliedNames.add(r.name);
+      if (r?.name) {
+        appliedNames.add(r.name);
+      }
     }
   } catch {
     // Tabela pode ter acabado de ser criada
   }
 
-  const sqlFiles = fs
-    .readdirSync(drizzleDir)
-    .filter((file) => file.endsWith('.sql'))
-    .sort();
+  const force = typeof process !== 'undefined' && process.argv?.includes('--force');
 
-  for (const file of sqlFiles) {
-    if (appliedNames.has(file) && !process.argv.includes('--force')) {
+  for (const { name, sql } of bundledMigrations) {
+    if (appliedNames.has(name) && !force) {
       continue;
     }
 
-    const filePath = path.join(drizzleDir, file);
-    const sqlContent = fs.readFileSync(filePath, 'utf-8');
-
-    const statements = sqlContent
+    const statements = sql
       .split('--> statement-breakpoint')
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
@@ -58,12 +52,14 @@ export async function runMigrations() {
       try {
         await executeRawSql(stmt);
       } catch (err: any) {
+        const msg = err?.message || String(err);
         if (
-          !err.message?.includes('already exists') &&
-          !err.message?.includes('duplicate key') &&
-          !err.message?.includes('already a partition')
+          !msg.includes('already exists') &&
+          !msg.includes('duplicate key') &&
+          !msg.includes('already a partition') &&
+          !msg.includes('multiple primary keys')
         ) {
-          console.warn(`Aviso na migração ${file}:`, err.message);
+          console.warn(`Aviso na migração ${name}:`, msg);
         }
       }
     }
@@ -71,7 +67,7 @@ export async function runMigrations() {
     // Registra migração como aplicada
     try {
       await executeRawSql(
-        `INSERT INTO "__aprova_migrations" ("name") VALUES ('${file}') ON CONFLICT ("name") DO NOTHING;`
+        `INSERT INTO "__aprova_migrations" ("name") VALUES ('${name}') ON CONFLICT ("name") DO NOTHING;`
       );
     } catch {
       // Ignora
@@ -79,8 +75,56 @@ export async function runMigrations() {
   }
 }
 
-// Se executado diretamente via CLI
-if (process.argv[1]?.endsWith('migrate.ts') || process.argv[1]?.includes('migrate')) {
+/**
+ * Garante que o banco de dados possui o schema e tabelas mínimas prontas.
+ * Se as tabelas não existirem (ex: primeiro boot no Cloudflare Workers ou Neon vazio),
+ * executa as migrações e o seed inicial automaticamente.
+ */
+export async function ensureDbReady(): Promise<void> {
+  if (isDbReady) return;
+  if (dbReadyPromise) return dbReadyPromise;
+
+  dbReadyPromise = (async () => {
+    try {
+      let needsMigration = false;
+      try {
+        await executeRawSql('SELECT 1 FROM "users" LIMIT 1;');
+      } catch {
+        needsMigration = true;
+      }
+
+      if (needsMigration) {
+        console.log('🔄 Inicializando tabelas do banco de dados (auto-migração)...');
+        await runMigrations();
+        try {
+          const { seed } = await import('./seed');
+          await seed();
+          console.log('🌱 Seed padrão aplicado com sucesso.');
+        } catch (seedErr: any) {
+          console.warn('Nota sobre seed inicial:', seedErr?.message || seedErr);
+        }
+      } else {
+        // Tabela users já existe, assegura que migrações mais recentes (ex: 0007_google_auth) estejam aplicadas
+        await runMigrations();
+      }
+
+      isDbReady = true;
+    } catch (err) {
+      console.error('❌ Falha ao assegurar prontidão do banco de dados:', err);
+    } finally {
+      dbReadyPromise = null;
+    }
+  })();
+
+  return dbReadyPromise;
+}
+
+// Se executado diretamente via CLI em Node.js
+if (
+  typeof process !== 'undefined' &&
+  process.argv &&
+  (process.argv[1]?.endsWith('migrate.ts') || process.argv[1]?.includes('migrate'))
+) {
   runMigrations()
     .then(() => {
       console.log('🎉 Migrações concluídas!');
@@ -91,3 +135,4 @@ if (process.argv[1]?.endsWith('migrate.ts') || process.argv[1]?.includes('migrat
       process.exit(1);
     });
 }
+

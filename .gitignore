@@ -32,3 +32,5 @@ drizzle/
 
 # Local Database
 data/
+*.tsbuildinfo
+
