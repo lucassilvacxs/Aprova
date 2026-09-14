@@ -64,4 +64,20 @@ export const authService = {
     }
     return data;
   },
+
+  async loginWithGoogle(credential: string): Promise<LoginResponse> {
+    const data = await api.post<LoginResponse>('/auth/google', { credential });
+    if (data.token) {
+      localStorage.setItem('aprova-token', data.token);
+    }
+    return data;
+  },
+
+  async register(name: string, email: string, password: string): Promise<LoginResponse> {
+    const data = await api.post<LoginResponse>('/auth/register', { name, email, password });
+    if (data.token) {
+      localStorage.setItem('aprova-token', data.token);
+    }
+    return data;
+  },
 };

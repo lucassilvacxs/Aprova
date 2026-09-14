@@ -135,4 +135,76 @@ describe('Autenticação & Sessão (Auth Routes)', () => {
     });
     expect(res.status).toBe(401);
   });
+
+  it('deve registrar e autenticar um novo usuário via Google Sign-In', async () => {
+    const res = await app.request('/api/v1/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        credential: 'mock_google_novo.aluno@gmail.com_Novo Aluno Google',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.token).toBeDefined();
+    expect(body.data.user.email).toBe('novo.aluno@gmail.com');
+    expect(body.data.user.name).toBe('Novo Aluno Google');
+    expect(body.data.user.role).toBe('student');
+  });
+
+  it('deve atribuir o papel ADMIN automaticamente ao logar com o email lucassilvaytb1999@gmail.com via Google', async () => {
+    const res = await app.request('/api/v1/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        credential: 'mock_google_lucassilvaytb1999@gmail.com_Lucas Silva Admin',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.token).toBeDefined();
+    expect(body.data.user.email).toBe('lucassilvaytb1999@gmail.com');
+    expect(body.data.user.role).toBe('admin');
+  });
+
+  it('deve permitir cadastro direto e aberto com email e senha sem convite', async () => {
+    const res = await app.request('/api/v1/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Aluno Direto',
+        email: 'aluno.direto@aprova.app',
+        password: 'SenhaForte123@',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.token).toBeDefined();
+    expect(body.data.user.email).toBe('aluno.direto@aprova.app');
+    expect(body.data.user.name).toBe('Aluno Direto');
+    expect(body.data.user.role).toBe('student');
+  });
+
+  it('deve rejeitar cadastro direto com email duplicado (409 Conflict)', async () => {
+    const res = await app.request('/api/v1/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Aluno Repetido',
+        email: 'aluno.direto@aprova.app',
+        password: 'OutraSenha123@',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error.code).toBe('EMAIL_ALREADY_EXISTS');
+  });
 });

@@ -9,9 +9,8 @@ import { useAuthStore } from '@/store';
 // Layout
 import { AppLayout } from '@/components/layout/AppLayout';
 
-// Auth & Invite
+// Auth
 import { LoginPage } from '@/pages/auth/LoginPage';
-import { InviteActivationPage } from '@/pages/auth/InviteActivationPage';
 
 // Guards
 import { RequireAuth, RequireAdmin } from './guards';
@@ -83,7 +82,7 @@ const router = createBrowserRouter([
   },
   {
     path: '/convite',
-    element: <InviteActivationPage />,
+    element: <Navigate to="/login" replace />,
   },
   {
     // Protected routes

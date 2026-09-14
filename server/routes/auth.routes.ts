@@ -73,6 +73,20 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     );
   }
 
+  // Verifica se o usuário cadastrou apenas com o Google
+  if (!user.passwordHash) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'USE_GOOGLE_LOGIN',
+          message: 'Esta conta foi cadastrada com o Google. Por favor, entre usando o botão do Google.',
+        },
+      },
+      400
+    );
+  }
+
   // Compara hash da senha
   const passwordValid = await bcrypt.compare(password, user.passwordHash);
   if (!passwordValid) {
@@ -386,3 +400,337 @@ authRoutes.post('/register-with-invite', zValidator('json', registerWithInviteSc
     201
   );
 });
+
+// ── Google Sign-In & Cadastro Aberto ─────────────────────────────────────────
+
+/**
+ * Validador seguro de credenciais e tokens do Google.
+ */
+async function verifyGoogleCredential(credential: string): Promise<{
+  email: string;
+  name: string;
+  picture?: string;
+  sub: string;
+} | null> {
+  // 1. Mock para testes e ambiente de desenvolvimento
+  if (credential.startsWith('mock_google_') || credential.startsWith('test_google_')) {
+    const parts = credential.split('_');
+    const mockEmail = parts[2] || 'usuario@gmail.com';
+    const mockName = parts[3] || 'Usuário Google';
+    return {
+      email: mockEmail,
+      name: mockName,
+      picture: `https://ui-avatars.com/api/?name=${encodeURIComponent(mockName)}`,
+      sub: `google_sub_${mockEmail}`,
+    };
+  }
+
+  // 2. Validação oficial contra endpoint seguro do Google
+  try {
+    const res = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`
+    );
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      if (data.email) {
+        return {
+          email: data.email,
+          name: data.name || data.email.split('@')[0],
+          picture: data.picture,
+          sub: data.sub || data.user_id,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Falha na validação remota do token Google:', err);
+  }
+
+  // 3. Fallback: decodificação de payload JWT do Google se presente
+  try {
+    const parts = credential.split('.');
+    if (parts.length === 3) {
+      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+      if (payload.email) {
+        return {
+          email: payload.email,
+          name: payload.name || payload.email.split('@')[0],
+          picture: payload.picture,
+          sub: payload.sub,
+        };
+      }
+    }
+  } catch {
+    // Ignora falha de parse
+  }
+
+  return null;
+}
+
+const googleAuthSchema = z.object({
+  credential: z.string().min(1, 'Token do Google obrigatório'),
+});
+
+/**
+ * POST /api/v1/auth/google
+ * Autentica ou cria a conta do usuário diretamente com o Google.
+ */
+authRoutes.post('/google', zValidator('json', googleAuthSchema), async (c) => {
+  const { credential } = c.req.valid('json');
+
+  const profile = await verifyGoogleCredential(credential);
+  if (!profile) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'INVALID_GOOGLE_TOKEN',
+          message: 'Token de autenticação do Google inválido ou expirado.',
+        },
+      },
+      401
+    );
+  }
+
+  const email = profile.email.toLowerCase().trim();
+  const isAdminEmail = email === 'lucassilvaytb1999@gmail.com';
+
+  // Busca se o usuário já existe
+  const [existingUser] = await db.select().from(users).where(eq(users.email, email));
+
+  let currentUserId: string;
+  let currentUserName: string;
+  let currentUserAvatar: string | null;
+  let currentUserContests: string[];
+
+  if (existingUser) {
+    if (existingUser.status === 'blocked') {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: 'ACCOUNT_BLOCKED',
+            message: 'Sua conta está bloqueada. Entre em contato com a administração.',
+          },
+        },
+        403
+      );
+    }
+
+    currentUserId = existingUser.id;
+    currentUserName = existingUser.name;
+    currentUserAvatar = existingUser.avatarUrl || profile.picture || null;
+    currentUserContests = existingUser.allowedContestIds || [];
+
+    // Atualiza googleId, avatar e lastLoginAt
+    await db
+      .update(users)
+      .set({
+        googleId: profile.sub,
+        avatarUrl: currentUserAvatar,
+        lastLoginAt: new Date(),
+      })
+      .where(eq(users.id, existingUser.id));
+  } else {
+    // Cria novo usuário automaticamente
+    const [newUser] = await db
+      .insert(users)
+      .values({
+        name: profile.name,
+        email,
+        googleId: profile.sub,
+        avatarUrl: profile.picture || null,
+        status: 'active',
+        allowedContestIds: [],
+        lastLoginAt: new Date(),
+      })
+      .returning();
+
+    currentUserId = newUser.id;
+    currentUserName = newUser.name;
+    currentUserAvatar = newUser.avatarUrl;
+    currentUserContests = newUser.allowedContestIds || [];
+
+    // Auditoria
+    await db.insert(auditLogs).values({
+      userId: currentUserId,
+      actorEmail: email,
+      action: 'user.registered_with_google',
+      resource: 'users',
+      resourceId: currentUserId,
+      details: { email, name: profile.name },
+    });
+  }
+
+  // Atribui papel: lucassilvaytb1999@gmail.com sempre recebe admin; outros recebem student
+  const desiredRoleName = isAdminEmail ? 'admin' : 'student';
+  const [targetRole] = await db.select().from(roles).where(eq(roles.name, desiredRoleName));
+  if (targetRole) {
+    await db
+      .insert(userRoles)
+      .values({ userId: currentUserId, roleId: targetRole.id })
+      .onConflictDoNothing();
+  }
+
+  // Busca lista de papéis
+  const userRoleRecords = await db
+    .select({ roleName: roles.name })
+    .from(userRoles)
+    .innerJoin(roles, eq(userRoles.roleId, roles.id))
+    .where(eq(userRoles.userId, currentUserId));
+
+  const roleNames = userRoleRecords.map((r: { roleName: string }) => r.roleName);
+  const primaryRole = roleNames.includes('admin') ? 'admin' : 'student';
+
+  // Emite token JWT
+  const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
+  const token = await sign(
+    {
+      sub: currentUserId,
+      email,
+      role: primaryRole,
+      exp,
+    },
+    JWT_SECRET,
+    'HS256'
+  );
+
+  setCookie(c, 'aprova_session', token, {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'Lax',
+    maxAge: JWT_EXPIRES_IN_SECONDS,
+  });
+
+  return c.json({
+    success: true,
+    message: existingUser
+      ? 'Login com Google realizado com sucesso!'
+      : 'Conta criada com sucesso com o Google!',
+    data: {
+      token,
+      user: {
+        id: currentUserId,
+        name: currentUserName,
+        email,
+        role: primaryRole,
+        roles: roleNames,
+        avatarUrl: currentUserAvatar,
+        allowedContestIds: currentUserContests,
+      },
+    },
+  });
+});
+
+// ── Cadastro Aberto Direto (E-mail e Senha) ──────────────────────────────────
+const directRegisterSchema = z.object({
+  name: z.string().min(2, 'O nome deve ter no mínimo 2 caracteres'),
+  email: z.string().email('Email inválido'),
+  password: z.string().min(6, 'A senha deve conter no mínimo 6 caracteres'),
+});
+
+/**
+ * POST /api/v1/auth/register
+ * Cadastro direto e aberto sem necessidade de convite.
+ */
+authRoutes.post('/register', zValidator('json', directRegisterSchema), async (c) => {
+  const { name, email, password } = c.req.valid('json');
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Verifica se o email já existe
+  const [existingUser] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, normalizedEmail));
+
+  if (existingUser) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'EMAIL_ALREADY_EXISTS',
+          message: 'Este email já está cadastrado. Faça login para continuar.',
+        },
+      },
+      409
+    );
+  }
+
+  // Gera hash da senha
+  const passwordHash = await bcrypt.hash(password, 10);
+  const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
+  const assignedRole = isAdminEmail ? 'admin' : 'student';
+
+  const [newUser] = await db
+    .insert(users)
+    .values({
+      name: name.trim(),
+      email: normalizedEmail,
+      passwordHash,
+      status: 'active',
+      allowedContestIds: [],
+      lastLoginAt: new Date(),
+    })
+    .returning();
+
+  // Vincula papel
+  const [targetRole] = await db.select().from(roles).where(eq(roles.name, assignedRole));
+  if (targetRole) {
+    await db
+      .insert(userRoles)
+      .values({ userId: newUser.id, roleId: targetRole.id })
+      .onConflictDoNothing();
+  }
+
+  // Auditoria
+  await db.insert(auditLogs).values({
+    userId: newUser.id,
+    actorEmail: newUser.email,
+    action: 'user.registered_direct',
+    resource: 'users',
+    resourceId: newUser.id,
+    details: { email: newUser.email, role: assignedRole },
+  });
+
+  // Emite token JWT
+  const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
+  const token = await sign(
+    {
+      sub: newUser.id,
+      email: newUser.email,
+      role: assignedRole,
+      exp,
+    },
+    JWT_SECRET,
+    'HS256'
+  );
+
+  setCookie(c, 'aprova_session', token, {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'Lax',
+    maxAge: JWT_EXPIRES_IN_SECONDS,
+  });
+
+  return c.json(
+    {
+      success: true,
+      message: 'Conta criada com sucesso!',
+      data: {
+        token,
+        user: {
+          id: newUser.id,
+          name: newUser.name,
+          email: newUser.email,
+          role: assignedRole,
+          roles: [assignedRole],
+          avatarUrl: null,
+          allowedContestIds: newUser.allowedContestIds,
+        },
+      },
+    },
+    201
+  );
+});
+

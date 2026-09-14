@@ -23,7 +23,8 @@ export const users = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
     name: varchar('name', { length: 255 }).notNull(),
     email: varchar('email', { length: 255 }).notNull().unique(),
-    passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+    passwordHash: varchar('password_hash', { length: 255 }),
+    googleId: varchar('google_id', { length: 255 }),
     avatarUrl: text('avatar_url'),
     status: varchar('status', { length: 50 }).notNull().default('active'), // 'active' | 'inactive' | 'blocked'
     allowedContestIds: jsonb('allowed_contest_ids').$type<string[]>().default([]).notNull(),
@@ -34,6 +35,7 @@ export const users = pgTable(
   (t) => [
     index('idx_users_email').on(t.email),
     index('idx_users_status').on(t.status),
+    index('idx_users_google_id').on(t.googleId),
   ]
 );
 
