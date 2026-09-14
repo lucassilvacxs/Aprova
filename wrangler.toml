@@ -1,0 +1,8 @@
+name = "aprova-plataforma"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_NAME = "APROVA"
+APP_ENV = "production"

@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --sidebar-width: 260px;
+    --header-height: 68px;
+    --transition: 150ms ease;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #0C0E14;
+    color: #F1F3FA;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-feature-settings: 'cv01', 'cv02', 'cv03', 'cv04';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  /* Seleção de texto */
+  ::selection {
+    background-color: rgba(124, 92, 250, 0.35);
+    color: #F1F3FA;
+  }
+
+  /* Scrollbar personalizada (Dark Mode) */
+  ::-webkit-scrollbar          { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track    { background: transparent; }
+  ::-webkit-scrollbar-thumb    { background: #252843; border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: #313657; }
+
+  /* Focus outline acessível */
+  *:focus-visible {
+    outline: 2px solid #7C5CFA;
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Transições globais padrão */
+  button, a, input, select, textarea {
+    transition: background-color var(--transition),
+                border-color var(--transition),
+                color var(--transition),
+                box-shadow var(--transition),
+                opacity var(--transition);
+  }
+}
+
+@layer components {
+  /* Utilitários compostos */
+  .glass {
+    @apply bg-bg-card/80 backdrop-blur-sm border border-border;
+  }
+
+  .surface {
+    @apply bg-bg-card border border-border rounded-2xl;
+  }
+
+  .surface-elevated {
+    @apply bg-bg-elevated border border-border-muted rounded-2xl shadow-md;
+  }
+
+  /* Gradiente de destaque da sidebar */
+  .sidebar-active {
+    @apply bg-brand-500 text-white shadow-brand;
+  }
+
+  /* Texto gradiente brand */
+  .text-gradient-brand {
+    @apply bg-gradient-to-r from-brand-400 to-brand-300 bg-clip-text text-transparent;
+  }
+
+  /* Progress bar animada */
+  .progress-bar {
+    @apply h-1.5 rounded-full overflow-hidden bg-border;
+  }
+  .progress-bar-fill {
+    @apply h-full rounded-full transition-all duration-700 ease-out;
+  }
+
+  /* KPI card pattern */
+  .kpi-card {
+    @apply surface p-5 flex flex-col gap-3 hover:border-border-muted transition-all duration-200 cursor-default;
+  }
+
+  /* Scrollable horizontal sem scrollbar visível no mobile */
+  .scroll-x-hidden {
+    @apply overflow-x-auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scroll-x-hidden::-webkit-scrollbar { display: none; }
+
+  /* Tabs underline */
+  .tab-item {
+    @apply px-4 py-2.5 text-sm font-medium text-text-secondary border-b-2 border-transparent
+           hover:text-text-primary hover:border-border-muted
+           transition-all duration-150 whitespace-nowrap;
+  }
+  .tab-item-active {
+    @apply text-brand-400 border-brand-500;
+  }
+}
+
+@layer utilities {
+  /* Truncate helpers */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Número grande estilo dashboard */
+  .stat-number {
+    @apply text-3xl font-extrabold tracking-tight text-text-primary tabular-nums;
+  }
+
+  .stat-label {
+    @apply text-xs font-semibold uppercase tracking-wider text-text-secondary;
+  }
+}
