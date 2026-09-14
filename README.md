@@ -143,12 +143,3 @@ GEMINI_API_KEY=
 # Armazenamento
 STORAGE_PROVIDER=local
 ```
-
----
-
-## 7. Estratégia de Deploy no Cloudflare
-
-1. **Frontend (SPA):** Publicação instantânea no **Cloudflare Pages** conectada ao diretório `/dist`.
-2. **Backend (API):** Executado em **Cloudflare Workers / Pages Functions** ou container gerenciado via Node.js/Hono.
-3. **Database Acceleration:** Conexão com PostgreSQL (Neon/Supabase) intermediada pelo **Cloudflare Hyperdrive** para pooling inteligente de conexões no Edge.
-4. **Armazenamento de PDFs:** Bucket no **Cloudflare R2** com subdomínio customizado e zero taxa de egresso.
