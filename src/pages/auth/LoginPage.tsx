@@ -251,9 +251,23 @@ export const LoginPage: React.FC = () => {
 
             {/* Erro */}
             {error && (
-              <div className="flex items-start gap-2.5 p-3 rounded-xl bg-danger-light border border-danger/25 animate-fade-in">
-                <span className="text-danger text-sm font-bold shrink-0">!</span>
-                <p className="text-sm text-danger-text">{error}</p>
+              <div className="flex flex-col gap-2 p-3 rounded-xl bg-danger-light border border-danger/25 animate-fade-in">
+                <div className="flex items-start gap-2.5">
+                  <span className="text-danger text-sm font-bold shrink-0">!</span>
+                  <p className="text-sm text-danger-text">{error}</p>
+                </div>
+                {isRegisterMode && error.includes('já está cadastrado') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRegisterMode(false);
+                      setError('');
+                    }}
+                    className="text-xs font-semibold text-brand-400 hover:text-brand-300 self-start ml-5 underline transition-colors"
+                  >
+                    Fazer login agora com este e-mail →
+                  </button>
+                )}
               </div>
             )}
 

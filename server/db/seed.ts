@@ -160,7 +160,7 @@ export async function seed() {
     const [lucasUser] = await db
       .insert(users)
       .values({
-        name: 'Lucas Silva (Admin)',
+        name: 'Lucas Silva',
         email: 'lucassilvaytb1999@gmail.com',
         passwordHash: lucasAdminPasswordHash,
         status: 'active',

@@ -1,9 +1,32 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 
+function apiDevServerPlugin(): Plugin {
+  return {
+    name: 'api-dev-server',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        if (req.url && (req.url.startsWith('/api/') || req.url === '/api')) {
+          try {
+            const { getRequestListener } = await import('@hono/node-server');
+            const { app } = await import('./server/app');
+            const handler = getRequestListener(app.fetch);
+            handler(req, res);
+          } catch (err) {
+            console.error('API dev server error:', err);
+            next(err);
+          }
+        } else {
+          next();
+        }
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), apiDevServerPlugin()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -11,12 +34,6 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-    },
   },
   build: {
     chunkSizeWarningLimit: 1000,
