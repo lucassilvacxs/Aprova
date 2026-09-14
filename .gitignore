@@ -29,3 +29,6 @@ dist-ssr
 # Test & Coverage
 coverage/
 drizzle/
+
+# Local Database
+data/
