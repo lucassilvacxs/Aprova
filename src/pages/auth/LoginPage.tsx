@@ -157,6 +157,7 @@ export const LoginPage: React.FC = () => {
               onError={handleGoogleError}
               isLoading={isGoogleLoading}
               text={isRegisterMode ? 'signup_with' : 'continue_with'}
+              hintEmail={email}
             />
           </div>
 
