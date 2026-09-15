@@ -1,5 +1,6 @@
 import { app } from '../../server/app';
 import { initDb } from '../../server/db';
+import { ensureDbReady } from '../../server/db/migrate';
 
 interface PagesFunctionContext {
   request: Request;
@@ -23,5 +24,9 @@ export const onRequest = async (context: PagesFunctionContext): Promise<Response
     initDb(process.env.DATABASE_URL);
   }
 
+  // Garante que as tabelas existem antes de atender a requisição
+  await ensureDbReady();
+
   return app.fetch(context.request, context.env, context);
 };
+

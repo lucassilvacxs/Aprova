@@ -6,6 +6,13 @@ function apiDevServerPlugin(): Plugin {
   return {
     name: 'api-dev-server',
     configureServer(server) {
+      // Inicializa banco de dados uma vez ao subir o servidor de desenvolvimento
+      import('./server/db/migrate').then(({ ensureDbReady }) => {
+        ensureDbReady().catch((err) => {
+          console.warn('[APROVA] Aviso: falha na auto-migração do banco de dados:', err);
+        });
+      });
+
       server.middlewares.use(async (req, res, next) => {
         if (req.url && (req.url.startsWith('/api/') || req.url === '/api')) {
           try {
@@ -24,6 +31,7 @@ function apiDevServerPlugin(): Plugin {
     },
   };
 }
+
 
 export default defineConfig({
   plugins: [react(), apiDevServerPlugin()],

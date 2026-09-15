@@ -30,18 +30,9 @@ import {
   documentAdminRoutes,
 } from './routes/documents.routes';
 
-import { ensureDbReady } from './db/migrate';
-
 dotenv.config();
 
 export const app = new Hono();
-
-// Assegura que o banco de dados e suas tabelas estejam migrados antes de atender rotas da API
-app.use('/api/*', async (_c, next) => {
-  await ensureDbReady();
-  await next();
-});
-
 
 // Global Middlewares
 app.use('*', logger());

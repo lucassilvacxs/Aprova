@@ -1,5 +1,6 @@
 import { app } from './app';
 import { initDb } from './db';
+import { ensureDbReady } from './db/migrate';
 
 interface Env {
   ASSETS?: {
@@ -26,8 +27,10 @@ export default {
       initDb(process.env.DATABASE_URL);
     }
 
-    // Rotas de API são processadas pelo Hono
+    // Garante que as tabelas existem antes de atender rotas de API
+    // No Cloudflare Workers, o body stream não é consumido até app.fetch() chamar request.json()
     if (url.pathname.startsWith('/api')) {
+      await ensureDbReady();
       return app.fetch(request, env, ctx);
     }
 

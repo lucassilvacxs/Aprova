@@ -1,7 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import app from '../server/app';
+import { ensureDbReady } from '../server/db/migrate';
 
 describe('Auto-migration & Direct Auth Verification', () => {
+  beforeAll(async () => {
+    // Simula o comportamento do server/index.ts ou worker.ts:
+    // garante que as migrações e seed estejam aplicados antes das requisições
+    await ensureDbReady();
+  });
+
   it('deve realizar auto-migração sob demanda e cadastrar usuário direto com sucesso', async () => {
     const res = await app.request('/api/v1/auth/register', {
       method: 'POST',
