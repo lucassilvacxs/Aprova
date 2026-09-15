@@ -86,16 +86,23 @@ export async function ensureDbReady(): Promise<void> {
 
   dbReadyPromise = (async () => {
     try {
-      let needsMigration = false;
+      // 1. Garante que todas as migrações SQL estão aplicadas
+      await runMigrations();
+
+      // 2. Verifica se o banco possui papéis/usuários iniciais
+      let needsSeed = false;
       try {
-        await executeRawSql('SELECT 1 FROM "users" LIMIT 1;');
+        const rolesRes = await executeRawSql('SELECT count(*)::int as count FROM "roles";');
+        const rolesCount = rolesRes?.rows?.[0]?.count ?? (Array.isArray(rolesRes) ? rolesRes[0]?.rows?.[0]?.count : 0);
+        if (!rolesCount || Number(rolesCount) === 0) {
+          needsSeed = true;
+        }
       } catch {
-        needsMigration = true;
+        needsSeed = true;
       }
 
-      if (needsMigration) {
-        console.log('🔄 Inicializando tabelas do banco de dados (auto-migração)...');
-        await runMigrations();
+      if (needsSeed) {
+        console.log('🌱 Inicializando papéis e dados padrão no banco de dados...');
         try {
           const { seed } = await import('./seed');
           await seed();
@@ -103,9 +110,6 @@ export async function ensureDbReady(): Promise<void> {
         } catch (seedErr: any) {
           console.warn('Nota sobre seed inicial:', seedErr?.message || seedErr);
         }
-      } else {
-        // Tabela users já existe, assegura que migrações mais recentes (ex: 0007_google_auth) estejam aplicadas
-        await runMigrations();
       }
 
       isDbReady = true;
@@ -118,6 +122,7 @@ export async function ensureDbReady(): Promise<void> {
 
   return dbReadyPromise;
 }
+
 
 // Se executado diretamente via CLI em Node.js
 if (

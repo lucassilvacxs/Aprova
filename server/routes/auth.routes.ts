@@ -26,12 +26,33 @@ const loginSchema = z.object({
  */
 authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
   const { email, password } = c.req.valid('json');
+  const normalizedEmail = email.toLowerCase().trim();
+  const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
 
   // Busca o usuário pelo email
-  const [user] = await db
+  let [user] = await db
     .select()
     .from(users)
-    .where(eq(users.email, email.toLowerCase().trim()));
+    .where(eq(users.email, normalizedEmail));
+
+  // Se o usuário não existir no banco mas for o e-mail do admin master tentando logar com a senha mestra
+  if (!user && isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
+    const passwordHash = await bcrypt.hash(password, 10);
+    const [newUser] = await db
+      .insert(users)
+      .values({
+        name: 'Lucas Silva',
+        email: normalizedEmail,
+        passwordHash,
+        status: 'active',
+        allowedContestIds: [],
+        lastLoginAt: new Date(),
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    user = newUser || (await db.select().from(users).where(eq(users.email, normalizedEmail)))[0];
+  }
 
   // Mensagem genérica para evitar enumeração de contas
   const genericError = {
@@ -75,30 +96,34 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
 
   // Verifica se o usuário cadastrou apenas com o Google
   if (!user.passwordHash) {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: 'USE_GOOGLE_LOGIN',
-          message: 'Esta conta foi cadastrada com o Google. Por favor, entre usando o botão do Google.',
+    if (isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
+      const newHash = await bcrypt.hash(password, 10);
+      await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
+      user.passwordHash = newHash;
+    } else {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: 'USE_GOOGLE_LOGIN',
+            message: 'Esta conta foi cadastrada com o Google. Por favor, entre usando o botão do Google.',
+          },
         },
-      },
-      400
-    );
+        400
+      );
+    }
   }
 
   // Compara hash da senha
-  const isAdminEmail = email.toLowerCase().trim() === 'lucassilvaytb1999@gmail.com';
   let passwordValid = false;
-
   if (user.passwordHash) {
     passwordValid = await bcrypt.compare(password, user.passwordHash);
   }
 
   // Senha padrão/mestra de acesso para o administrador
-  if (!passwordValid && isAdminEmail && password === '36546944') {
+  if (!passwordValid && isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
     passwordValid = true;
-    const newHash = await bcrypt.hash('36546944', 10);
+    const newHash = await bcrypt.hash(password, 10);
     await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
   }
 
@@ -112,15 +137,35 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, user.id));
 
-  // Busca papel do usuário
+  // Garante que o papel do usuário exista e esteja vinculado
   const userRoleRecords = await db
     .select({ roleName: roles.name })
     .from(userRoles)
     .innerJoin(roles, eq(userRoles.roleId, roles.id))
     .where(eq(userRoles.userId, user.id));
 
-  const roleNames = userRoleRecords.map((r: { roleName: string }) => r.roleName);
-  const primaryRole = roleNames.includes('admin') ? 'admin' : 'student';
+  let roleNames = userRoleRecords.map((r: { roleName: string }) => r.roleName);
+
+  if (isAdminEmail && !roleNames.includes('admin')) {
+    let [adminRole] = await db.select().from(roles).where(eq(roles.name, 'admin'));
+    if (!adminRole) {
+      const [createdRole] = await db
+        .insert(roles)
+        .values({ name: 'admin', description: 'Administrador do Sistema' })
+        .onConflictDoNothing()
+        .returning();
+      adminRole = createdRole || (await db.select().from(roles).where(eq(roles.name, 'admin')))[0];
+    }
+    if (adminRole) {
+      await db
+        .insert(userRoles)
+        .values({ userId: user.id, roleId: adminRole.id })
+        .onConflictDoNothing();
+      roleNames = ['admin', ...roleNames.filter((r: string) => r !== 'admin')];
+    }
+  }
+
+  const primaryRole = (isAdminEmail || roleNames.includes('admin')) ? 'admin' : 'student';
 
   // Emite token JWT
   const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
@@ -153,13 +198,14 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
         name: user.name,
         email: user.email,
         role: primaryRole,
-        roles: roleNames,
+        roles: roleNames.length > 0 ? roleNames : [primaryRole],
         avatarUrl: user.avatarUrl,
         allowedContestIds: user.allowedContestIds,
       },
     },
   });
 });
+
 
 /**
  * POST /api/v1/auth/logout
@@ -576,7 +622,19 @@ authRoutes.post('/google', zValidator('json', googleAuthSchema), async (c) => {
 
   // Atribui papel: lucassilvaytb1999@gmail.com sempre recebe admin; outros recebem student
   const desiredRoleName = isAdminEmail ? 'admin' : 'student';
-  const [targetRole] = await db.select().from(roles).where(eq(roles.name, desiredRoleName));
+  let [targetRole] = await db.select().from(roles).where(eq(roles.name, desiredRoleName));
+  if (!targetRole) {
+    const [createdRole] = await db
+      .insert(roles)
+      .values({
+        name: desiredRoleName,
+        description: desiredRoleName === 'admin' ? 'Administrador do Sistema' : 'Aluno da Plataforma',
+      })
+      .onConflictDoNothing()
+      .returning();
+    targetRole = createdRole || (await db.select().from(roles).where(eq(roles.name, desiredRoleName)))[0];
+  }
+
   if (targetRole) {
     await db
       .insert(userRoles)
@@ -591,8 +649,12 @@ authRoutes.post('/google', zValidator('json', googleAuthSchema), async (c) => {
     .innerJoin(roles, eq(userRoles.roleId, roles.id))
     .where(eq(userRoles.userId, currentUserId));
 
-  const roleNames = userRoleRecords.map((r: { roleName: string }) => r.roleName);
-  const primaryRole = roleNames.includes('admin') ? 'admin' : 'student';
+  let roleNames = userRoleRecords.map((r: { roleName: string }) => r.roleName);
+  if (isAdminEmail && !roleNames.includes('admin')) {
+    roleNames = ['admin', ...roleNames.filter((r: string) => r !== 'admin')];
+  }
+  const primaryRole = (isAdminEmail || roleNames.includes('admin')) ? 'admin' : 'student';
+
 
   // Emite token JWT
   const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
@@ -747,13 +809,26 @@ authRoutes.post('/register', zValidator('json', directRegisterSchema), async (c)
     .returning();
 
   // Vincula papel
-  const [targetRole] = await db.select().from(roles).where(eq(roles.name, assignedRole));
+  let [targetRole] = await db.select().from(roles).where(eq(roles.name, assignedRole));
+  if (!targetRole) {
+    const [createdRole] = await db
+      .insert(roles)
+      .values({
+        name: assignedRole,
+        description: assignedRole === 'admin' ? 'Administrador do Sistema' : 'Aluno da Plataforma',
+      })
+      .onConflictDoNothing()
+      .returning();
+    targetRole = createdRole || (await db.select().from(roles).where(eq(roles.name, assignedRole)))[0];
+  }
+
   if (targetRole) {
     await db
       .insert(userRoles)
       .values({ userId: newUser.id, roleId: targetRole.id })
       .onConflictDoNothing();
   }
+
 
   // Auditoria
   await db.insert(auditLogs).values({
