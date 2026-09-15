@@ -1,6 +1,6 @@
 import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres';
-import { drizzle as drizzleNeon } from 'drizzle-orm/neon-serverless';
-import { Pool as NeonPool } from '@neondatabase/serverless';
+import { drizzle as drizzleNeonHttp } from 'drizzle-orm/neon-http';
+import { neon as neonClient } from '@neondatabase/serverless';
 import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import { PGlite } from '@electric-sql/pglite';
 import pg from 'pg';
@@ -14,6 +14,7 @@ const { Pool } = pg;
 
 let dbInstance: any = null;
 let poolInstance: any = null;
+let neonHttpClient: any = null;
 let pgliteInstance: PGlite | null = null;
 let currentDbUrl: string | undefined = undefined;
 
@@ -26,6 +27,7 @@ export function initDb(overrideUrl?: string) {
   currentDbUrl = dbUrl;
   dbInstance = null;
   poolInstance = null;
+  neonHttpClient = null;
   pgliteInstance = null;
 
   const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
@@ -38,7 +40,7 @@ export function initDb(overrideUrl?: string) {
     process.env.CF_PAGES === '1';
 
   const isNeonOrServerless =
-    Boolean(dbUrl && (dbUrl.includes('neon.tech') || process.env.USE_NEON === 'true')) ||
+    Boolean(dbUrl && (dbUrl.includes('neon.tech') || dbUrl.includes('sslmode=') || process.env.USE_NEON === 'true')) ||
     isCloudflareOrEdge;
 
   const useRemotePostgres =
@@ -48,18 +50,14 @@ export function initDb(overrideUrl?: string) {
     dbUrl &&
     !dbUrl.includes('localhost:5432/aprova_db');
 
-  if (isNeonOrServerless) {
-    if (dbUrl) {
-      const neonPool = new NeonPool({ connectionString: dbUrl });
-      poolInstance = neonPool;
-      dbInstance = drizzleNeon(neonPool, { schema });
-      console.log('⚡ Banco de dados: Conectado ao PostgreSQL Serverless (Neon/Cloudflare).');
-    } else {
-      // Cloudflare worker sem DATABASE_URL configurada: PGlite em memória (seguro)
-      pgliteInstance = new PGlite();
-      dbInstance = drizzlePglite(pgliteInstance, { schema });
-      console.log('⚡ Banco de dados: PGlite em memória (Cloudflare Worker).');
-    }
+  if (isNeonOrServerless && dbUrl) {
+    neonHttpClient = neonClient(dbUrl);
+    dbInstance = drizzleNeonHttp(neonHttpClient, { schema });
+    console.log('⚡ Banco de dados: Conectado via HTTP Serverless (Neon/Cloudflare).');
+  } else if (isCloudflareOrEdge && !dbUrl) {
+    console.error('❌ ERRO CRÍTICO CLOUDFLARE: DATABASE_URL não configurada no painel da Cloudflare!');
+    pgliteInstance = new PGlite();
+    dbInstance = drizzlePglite(pgliteInstance, { schema });
   } else if (useRemotePostgres) {
     poolInstance = new Pool({
       connectionString: dbUrl,
@@ -68,11 +66,12 @@ export function initDb(overrideUrl?: string) {
     });
     dbInstance = drizzlePg(poolInstance, { schema });
     console.log('📡 Banco de dados: Conectado ao PostgreSQL remoto via pg.Pool.');
-  } else if (isTestEnv || isCloudflareOrEdge) {
-    // Em ambiente de teste ou Edge: PostgreSQL em memória ultrarrápido sem filesystem
+  } else if (isTestEnv) {
+    // Em ambiente de teste: PostgreSQL em memória ultrarrápido sem filesystem
     pgliteInstance = new PGlite();
     dbInstance = drizzlePglite(pgliteInstance, { schema });
   } else {
+
     // Em desenvolvimento local Node.js: PostgreSQL persistente em disco
     try {
       if (typeof fs !== 'undefined' && typeof fs.existsSync === 'function') {
@@ -150,6 +149,10 @@ export const db: any = new Proxy({} as any, {
  */
 export async function executeRawSql(query: string, params: any[] = []): Promise<any> {
   initDb();
+  if (neonHttpClient) {
+    const rows = await neonHttpClient(query, params);
+    return { rows: Array.isArray(rows) ? rows : [] };
+  }
   if (pgliteInstance) {
     if (params.length === 0) {
       return pgliteInstance.exec(query);
@@ -161,3 +164,4 @@ export async function executeRawSql(query: string, params: any[] = []): Promise<
   }
   throw new Error('Nenhum driver de banco de dados ativo.');
 }
+
