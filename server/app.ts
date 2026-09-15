@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { HTTPException } from 'hono/http-exception';
 import * as dotenv from 'dotenv';
 import { authRoutes } from './routes/auth.routes';
 import { dashboardRoutes } from './routes/dashboard.routes';
@@ -120,6 +121,20 @@ app.route('/api/v1/admin/documents', documentAdminRoutes);
 // Central Error Handler
 app.onError((err, c) => {
   console.error('Unhandled API error:', err);
+
+  if (err instanceof HTTPException) {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: err.status === 400 ? 'INVALID_REQUEST' : `HTTP_${err.status}`,
+          message: err.message || 'Erro ao processar requisição.',
+        },
+      },
+      err.status
+    );
+  }
+
   return c.json(
     {
       success: false,
@@ -132,6 +147,7 @@ app.onError((err, c) => {
     500
   );
 });
+
 
 // 404 Handler
 app.notFound((c) => {

@@ -14,45 +14,65 @@ const JWT_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60; // 7 dias
 
 export const authRoutes = new Hono();
 
+// Helper de validação Zod com mensagens de erro amigáveis para o usuário
+const validateJson = <T extends z.ZodTypeAny>(schema: T) =>
+  zValidator('json', schema, (result, c) => {
+    if (!result.success) {
+      const firstError = result.error.errors[0]?.message || 'Dados inválidos fornecidos.';
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: 'INVALID_INPUT',
+            message: firstError,
+          },
+        },
+        400
+      );
+    }
+  });
+
 // ── Schema de Validação de Login ─────────────────────────────────────────────
 const loginSchema = z.object({
-  email: z.string().email('Formato de email inválido'),
-  password: z.string().min(6, 'A senha deve conter no mínimo 6 caracteres'),
+  email: z.string().email('Formato de e-mail inválido. Informe um e-mail válido.'),
+  password: z.string().min(1, 'A senha é obrigatória para realizar o login.'),
 });
 
 /**
  * POST /api/v1/auth/login
  * Realiza autenticação segura, sem revelar se o email existe.
  */
-authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
-  const { email, password } = c.req.valid('json');
-  const normalizedEmail = email.toLowerCase().trim();
-  const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
+authRoutes.post('/login', validateJson(loginSchema), async (c) => {
+  try {
+    const { email, password } = c.req.valid('json');
+    const normalizedEmail = email.toLowerCase().trim();
+    const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
 
-  // Busca o usuário pelo email
-  let [user] = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, normalizedEmail));
+    // Busca o usuário pelo email
+    let [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, normalizedEmail));
 
-  // Se o usuário não existir no banco mas for o e-mail do admin master tentando logar com a senha mestra
-  if (!user && isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
-    const passwordHash = await bcrypt.hash(password, 10);
-    const [newUser] = await db
-      .insert(users)
-      .values({
-        name: 'Lucas Silva',
-        email: normalizedEmail,
-        passwordHash,
-        status: 'active',
-        allowedContestIds: [],
-        lastLoginAt: new Date(),
-      })
-      .onConflictDoNothing()
-      .returning();
+    // Se o usuário não existir no banco mas for o e-mail do admin master tentando logar com a senha mestra
+    if (!user && isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
+      const passwordHash = await bcrypt.hash(password, 10);
+      const [newUser] = await db
+        .insert(users)
+        .values({
+          name: 'Lucas Silva',
+          email: normalizedEmail,
+          passwordHash,
+          status: 'active',
+          allowedContestIds: [],
+          lastLoginAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning();
 
-    user = newUser || (await db.select().from(users).where(eq(users.email, normalizedEmail)))[0];
-  }
+      user = newUser || (await db.select().from(users).where(eq(users.email, normalizedEmail)))[0];
+    }
+
 
   // Mensagem genérica para evitar enumeração de contas
   const genericError = {
@@ -204,7 +224,22 @@ authRoutes.post('/login', zValidator('json', loginSchema), async (c) => {
       },
     },
   });
+  } catch (err: any) {
+    console.error('❌ Login error:', err);
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: 'LOGIN_FAILED',
+          message: 'Falha ao realizar login. Por favor, tente novamente.',
+          details: process.env.NODE_ENV === 'development' ? err?.message : undefined,
+        },
+      },
+      500
+    );
+  }
 });
+
 
 
 /**
@@ -533,7 +568,7 @@ const googleAuthSchema = z.object({
  * POST /api/v1/auth/google
  * Autentica ou cria a conta do usuário diretamente com o Google.
  */
-authRoutes.post('/google', zValidator('json', googleAuthSchema), async (c) => {
+authRoutes.post('/google', validateJson(googleAuthSchema), async (c) => {
   const { credential } = c.req.valid('json');
 
   const profile = await verifyGoogleCredential(credential);
@@ -708,7 +743,7 @@ const directRegisterSchema = z.object({
  * POST /api/v1/auth/register
  * Cadastro direto e aberto sem necessidade de convite.
  */
-authRoutes.post('/register', zValidator('json', directRegisterSchema), async (c) => {
+authRoutes.post('/register', validateJson(directRegisterSchema), async (c) => {
   const { name, email, password } = c.req.valid('json');
   const normalizedEmail = email.toLowerCase().trim();
 
