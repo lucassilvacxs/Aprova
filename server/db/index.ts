@@ -51,7 +51,19 @@ export function initDb(overrideUrl?: string) {
     !dbUrl.includes('localhost:5432/aprova_db');
 
   if (isNeonOrServerless && dbUrl) {
-    neonHttpClient = neonClient(dbUrl);
+    const rawNeon = neonClient(dbUrl);
+    neonHttpClient = (query: any, params?: any, options?: any) => {
+      if (typeof query === 'string') {
+        if (typeof (rawNeon as any).query === 'function') {
+          return (rawNeon as any).query(query, params, options);
+        }
+      }
+      return (rawNeon as any)(query, params, options);
+    };
+    if (typeof (rawNeon as any).query === 'function') {
+      (neonHttpClient as any).query = (query: any, params?: any, options?: any) =>
+        (rawNeon as any).query(query, params, options);
+    }
     dbInstance = drizzleNeonHttp(neonHttpClient, { schema });
     console.log('⚡ Banco de dados: Conectado via HTTP Serverless (Neon/Cloudflare).');
   } else if (isCloudflareOrEdge && !dbUrl) {
