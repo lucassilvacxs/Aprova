@@ -43,24 +43,20 @@ export async function runMigrations() {
       continue;
     }
 
-    const statements = sql
-      .split('--> statement-breakpoint')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+    // Executa todo o arquivo de migração em 1 única subrequest HTTP batch (evita limite de subrequests do Cloudflare)
+    try {
+      await executeRawSql(sql);
+    } catch (err: any) {
+      // Fallback: se o batch completo falhar por sintaxe específica, tenta comandos individuais
+      const statements = sql
+        .split('--> statement-breakpoint')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
 
-    for (const stmt of statements) {
-      try {
-        await executeRawSql(stmt);
-      } catch (err: any) {
-        const msg = err?.message || String(err);
-        if (
-          !msg.includes('already exists') &&
-          !msg.includes('duplicate key') &&
-          !msg.includes('already a partition') &&
-          !msg.includes('multiple primary keys')
-        ) {
-          console.warn(`Aviso na migração ${name}:`, msg);
-        }
+      for (const stmt of statements) {
+        try {
+          await executeRawSql(stmt);
+        } catch {}
       }
     }
 
@@ -77,8 +73,7 @@ export async function runMigrations() {
 
 /**
  * Garante que o banco de dados possui o schema e tabelas mínimas prontas.
- * Se as tabelas não existirem (ex: primeiro boot no Cloudflare Workers ou Neon vazio),
- * executa as migrações e o seed inicial automaticamente.
+ * Executado com verificação ultrarrápida (1 query) para não consumir cota de subrequests.
  */
 export async function ensureDbReady(): Promise<void> {
   if (isDbReady) return;
@@ -86,38 +81,55 @@ export async function ensureDbReady(): Promise<void> {
 
   dbReadyPromise = (async () => {
     try {
-      // 1. Garante que todas as migrações SQL estão aplicadas
-      await runMigrations();
-
-      // Auto-healing resiliente para colunas críticas do schema (garante google_id no Neon)
+      // Verificação de caminho rápido: se a tabela de usuários já responde, pula migrações pesadas
+      let isAlreadyInitialized = false;
       try {
-        await executeRawSql('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "google_id" varchar(255);');
-        await executeRawSql('ALTER TABLE "users" ALTER COLUMN "password_hash" DROP NOT NULL;');
-        await executeRawSql('CREATE INDEX IF NOT EXISTS "idx_users_google_id" ON "users" USING btree ("google_id");');
+        const check = await executeRawSql('SELECT 1 FROM "users" LIMIT 1;');
+        if (check) {
+          isAlreadyInitialized = true;
+        }
+      } catch {
+        isAlreadyInitialized = false;
+      }
+
+      if (!isAlreadyInitialized) {
+        // 1. Garante que todas as migrações SQL estão aplicadas em batch
+        await runMigrations();
+      }
+
+      // Auto-healing em 1 ÚNICA subrequest HTTP (garante colunas essenciais como google_id)
+      try {
+        await executeRawSql(`
+          ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "google_id" varchar(255);
+          ALTER TABLE "users" ALTER COLUMN "password_hash" DROP NOT NULL;
+          CREATE INDEX IF NOT EXISTS "idx_users_google_id" ON "users" USING btree ("google_id");
+        `);
       } catch (healErr) {
-        // Ignora se a coluna já existir
+        // Ignora se colunas já existirem
       }
 
       // 2. Verifica se o banco possui papéis/usuários iniciais
-      let needsSeed = false;
-      try {
-        const rolesRes = await executeRawSql('SELECT count(*)::int as count FROM "roles";');
-        const rolesCount = rolesRes?.rows?.[0]?.count ?? (Array.isArray(rolesRes) ? rolesRes[0]?.rows?.[0]?.count : 0);
-        if (!rolesCount || Number(rolesCount) === 0) {
+      if (!isAlreadyInitialized) {
+        let needsSeed = false;
+        try {
+          const rolesRes = await executeRawSql('SELECT count(*)::int as count FROM "roles";');
+          const rolesCount = rolesRes?.rows?.[0]?.count ?? (Array.isArray(rolesRes) ? rolesRes[0]?.rows?.[0]?.count : 0);
+          if (!rolesCount || Number(rolesCount) === 0) {
+            needsSeed = true;
+          }
+        } catch {
           needsSeed = true;
         }
-      } catch {
-        needsSeed = true;
-      }
 
-      if (needsSeed) {
-        console.log('🌱 Inicializando papéis e dados padrão no banco de dados...');
-        try {
-          const { seed } = await import('./seed');
-          await seed();
-          console.log('🌱 Seed padrão aplicado com sucesso.');
-        } catch (seedErr: any) {
-          console.warn('Nota sobre seed inicial:', seedErr?.message || seedErr);
+        if (needsSeed) {
+          console.log('🌱 Inicializando papéis e dados padrão no banco de dados...');
+          try {
+            const { seed } = await import('./seed');
+            await seed();
+            console.log('🌱 Seed padrão aplicado com sucesso.');
+          } catch (seedErr: any) {
+            console.warn('Nota sobre seed inicial:', seedErr?.message || seedErr);
+          }
         }
       }
 
