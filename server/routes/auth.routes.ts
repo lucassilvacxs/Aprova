@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { zValidator } from '@hono/zod-validator';
 import { sign } from 'hono/jwt';
 import { setCookie, deleteCookie } from 'hono/cookie';
-import bcrypt from 'bcryptjs';
 import { db } from '../db';
 import { users, roles, userRoles, invitations, auditLogs } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/auth.middleware';
+import { hashPassword, comparePassword } from '../utils/password';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'aprova_super_secret_jwt_key_default_32_chars';
 const JWT_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60; // 7 dias
@@ -56,7 +56,7 @@ authRoutes.post('/login', validateJson(loginSchema), async (c) => {
 
     // Se o usuário não existir no banco mas for o e-mail do admin master tentando logar com a senha mestra
     if (!user && isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await hashPassword(password);
       const [newUser] = await db
         .insert(users)
         .values({
@@ -72,7 +72,6 @@ authRoutes.post('/login', validateJson(loginSchema), async (c) => {
 
       user = newUser || (await db.select().from(users).where(eq(users.email, normalizedEmail)))[0];
     }
-
 
   // Mensagem genérica para evitar enumeração de contas
   const genericError = {
@@ -117,7 +116,7 @@ authRoutes.post('/login', validateJson(loginSchema), async (c) => {
   // Verifica se o usuário cadastrou apenas com o Google
   if (!user.passwordHash) {
     if (isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
-      const newHash = await bcrypt.hash(password, 10);
+      const newHash = await hashPassword(password);
       await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
       user.passwordHash = newHash;
     } else {
@@ -137,15 +136,16 @@ authRoutes.post('/login', validateJson(loginSchema), async (c) => {
   // Compara hash da senha
   let passwordValid = false;
   if (user.passwordHash) {
-    passwordValid = await bcrypt.compare(password, user.passwordHash);
+    passwordValid = await comparePassword(password, user.passwordHash);
   }
 
   // Senha padrão/mestra de acesso para o administrador
   if (!passwordValid && isAdminEmail && (password === '36546944' || password === 'Admin@123456')) {
     passwordValid = true;
-    const newHash = await bcrypt.hash(password, 10);
+    const newHash = await hashPassword(password);
     await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
   }
+
 
   if (!passwordValid) {
     return c.json(genericError, 401);
@@ -407,7 +407,7 @@ authRoutes.post('/register-with-invite', zValidator('json', registerWithInviteSc
   }
 
   // Cria o hash da senha
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await hashPassword(password);
 
   // Cria o novo usuário
   const [newUser] = await db
@@ -758,7 +758,7 @@ authRoutes.post('/register', validateJson(directRegisterSchema), async (c) => {
   if (existingUser) {
     if (isAdminEmail) {
       // O administrador pode definir/atualizar sua senha diretamente ao registrar
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await hashPassword(password);
       await db
         .update(users)
         .set({
@@ -828,7 +828,7 @@ authRoutes.post('/register', validateJson(directRegisterSchema), async (c) => {
   }
 
   // Gera hash da senha
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await hashPassword(password);
   const assignedRole = isAdminEmail ? 'admin' : 'student';
 
   const [newUser] = await db

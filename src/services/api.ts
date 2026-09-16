@@ -75,9 +75,11 @@ export async function request<T = any>(
 
   if (!response.ok) {
     const errorCode = data?.error?.code || `HTTP_${response.status}`;
-    const errorMessage = data?.error?.message || response.statusText || 'Ocorreu um erro na requisição.';
+    const baseMessage = data?.error?.message || response.statusText || 'Ocorreu um erro na requisição.';
+    const errorMessage = data?.error?.details ? `${baseMessage} (${data.error.details})` : baseMessage;
     throw new ApiError(errorMessage, errorCode, response.status, data?.error?.details);
   }
+
 
   return data?.data !== undefined ? data.data : data;
 }
