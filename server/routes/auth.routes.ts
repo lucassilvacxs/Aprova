@@ -8,6 +8,7 @@ import { users, roles, userRoles, invitations, auditLogs } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '../middlewares/auth.middleware';
 import { hashPassword, comparePassword } from '../utils/password';
+import { ensureDbReady } from '../db/migrate';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'aprova_super_secret_jwt_key_default_32_chars';
 const JWT_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60; // 7 dias
@@ -744,176 +745,195 @@ const directRegisterSchema = z.object({
  * Cadastro direto e aberto sem necessidade de convite.
  */
 authRoutes.post('/register', validateJson(directRegisterSchema), async (c) => {
-  const { name, email, password } = c.req.valid('json');
-  const normalizedEmail = email.toLowerCase().trim();
+  try {
+    const { name, email, password } = c.req.valid('json');
+    const normalizedEmail = email.toLowerCase().trim();
 
-  // Verifica se o email já existe
-  const [existingUser] = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, normalizedEmail));
+    // Assegura que o banco de dados e todas as tabelas (users, roles, etc.) foram criados
+    await ensureDbReady();
 
-  const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
+    // Verifica se o email já existe
+    const [existingUser] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, normalizedEmail));
 
-  if (existingUser) {
-    if (isAdminEmail) {
-      // O administrador pode definir/atualizar sua senha diretamente ao registrar
-      const passwordHash = await hashPassword(password);
-      await db
-        .update(users)
-        .set({
-          name: name.trim() || existingUser.name,
-          passwordHash,
-          status: 'active',
-          lastLoginAt: new Date(),
-        })
-        .where(eq(users.id, existingUser.id));
+    const isAdminEmail = normalizedEmail === 'lucassilvaytb1999@gmail.com';
 
-      const [adminRole] = await db.select().from(roles).where(eq(roles.name, 'admin'));
-      if (adminRole) {
+    if (existingUser) {
+      if (isAdminEmail) {
+        // O administrador pode definir/atualizar sua senha diretamente ao registrar
+        const passwordHash = await hashPassword(password);
         await db
-          .insert(userRoles)
-          .values({ userId: existingUser.id, roleId: adminRole.id })
-          .onConflictDoNothing();
+          .update(users)
+          .set({
+            name: name.trim() || existingUser.name,
+            passwordHash,
+            status: 'active',
+            lastLoginAt: new Date(),
+          })
+          .where(eq(users.id, existingUser.id));
+
+        const [adminRole] = await db.select().from(roles).where(eq(roles.name, 'admin'));
+        if (adminRole) {
+          await db
+            .insert(userRoles)
+            .values({ userId: existingUser.id, roleId: adminRole.id })
+            .onConflictDoNothing();
+        }
+
+        const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
+        const token = await sign(
+          {
+            sub: existingUser.id,
+            email: normalizedEmail,
+            role: 'admin',
+            exp,
+          },
+          JWT_SECRET,
+          'HS256'
+        );
+
+        setCookie(c, 'aprova_session', token, {
+          path: '/',
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'Lax',
+          maxAge: JWT_EXPIRES_IN_SECONDS,
+        });
+
+        return c.json({
+          success: true,
+          message: 'Conta de Administrador acessada com sucesso!',
+          data: {
+            token,
+            user: {
+              id: existingUser.id,
+              name: name.trim() || existingUser.name,
+              email: normalizedEmail,
+              role: 'admin',
+              roles: ['admin'],
+              avatarUrl: existingUser.avatarUrl,
+              allowedContestIds: existingUser.allowedContestIds,
+            },
+          },
+        });
       }
 
-      const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
-      const token = await sign(
+      return c.json(
         {
-          sub: existingUser.id,
-          email: normalizedEmail,
-          role: 'admin',
-          exp,
+          success: false,
+          error: {
+            code: 'EMAIL_ALREADY_EXISTS',
+            message: 'Este email já está cadastrado. Clique em "Fazer login" para entrar.',
+          },
         },
-        JWT_SECRET,
-        'HS256'
+        409
       );
+    }
 
-      setCookie(c, 'aprova_session', token, {
-        path: '/',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'Lax',
-        maxAge: JWT_EXPIRES_IN_SECONDS,
+    // Gera hash da senha
+    const passwordHash = await hashPassword(password);
+    const assignedRole = isAdminEmail ? 'admin' : 'student';
+
+    const [newUser] = await db
+      .insert(users)
+      .values({
+        name: name.trim(),
+        email: normalizedEmail,
+        passwordHash,
+        status: 'active',
+        allowedContestIds: [],
+        lastLoginAt: new Date(),
+      })
+      .returning();
+
+    // Vincula papel
+    let [targetRole] = await db.select().from(roles).where(eq(roles.name, assignedRole));
+    if (!targetRole) {
+      const [createdRole] = await db
+        .insert(roles)
+        .values({
+          name: assignedRole,
+          description: assignedRole === 'admin' ? 'Administrador do Sistema' : 'Aluno da Plataforma',
+        })
+        .onConflictDoNothing()
+        .returning();
+      targetRole = createdRole || (await db.select().from(roles).where(eq(roles.name, assignedRole)))[0];
+    }
+
+    if (targetRole) {
+      await db
+        .insert(userRoles)
+        .values({ userId: newUser.id, roleId: targetRole.id })
+        .onConflictDoNothing();
+    }
+
+    // Auditoria
+    try {
+      await db.insert(auditLogs).values({
+        userId: newUser.id,
+        actorEmail: newUser.email,
+        action: 'user.registered_direct',
+        resource: 'users',
+        resourceId: newUser.id,
+        details: { email: newUser.email, role: assignedRole },
       });
+    } catch {}
 
-      return c.json({
+    // Emite token JWT
+    const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
+    const token = await sign(
+      {
+        sub: newUser.id,
+        email: newUser.email,
+        role: assignedRole,
+        exp,
+      },
+      JWT_SECRET,
+      'HS256'
+    );
+
+    setCookie(c, 'aprova_session', token, {
+      path: '/',
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'Lax',
+      maxAge: JWT_EXPIRES_IN_SECONDS,
+    });
+
+    return c.json(
+      {
         success: true,
-        message: 'Conta de Administrador acessada com sucesso!',
+        message: 'Conta criada com sucesso!',
         data: {
           token,
           user: {
-            id: existingUser.id,
-            name: name.trim() || existingUser.name,
-            email: normalizedEmail,
-            role: 'admin',
-            roles: ['admin'],
-            avatarUrl: existingUser.avatarUrl,
-            allowedContestIds: existingUser.allowedContestIds,
+            id: newUser.id,
+            name: newUser.name,
+            email: newUser.email,
+            role: assignedRole,
+            roles: [assignedRole],
+            avatarUrl: null,
+            allowedContestIds: newUser.allowedContestIds,
           },
         },
-      });
-    }
-
+      },
+      201
+    );
+  } catch (err: any) {
+    console.error('❌ Direct register error:', err);
     return c.json(
       {
         success: false,
         error: {
-          code: 'EMAIL_ALREADY_EXISTS',
-          message: 'Este email já está cadastrado. Faça login para continuar.',
+          code: 'REGISTER_FAILED',
+          message: err?.message || 'Falha ao criar conta. Por favor, tente novamente.',
+          details: process.env.NODE_ENV === 'development' ? err?.message : undefined,
         },
       },
-      409
+      500
     );
   }
-
-  // Gera hash da senha
-  const passwordHash = await hashPassword(password);
-  const assignedRole = isAdminEmail ? 'admin' : 'student';
-
-  const [newUser] = await db
-    .insert(users)
-    .values({
-      name: name.trim(),
-      email: normalizedEmail,
-      passwordHash,
-      status: 'active',
-      allowedContestIds: [],
-      lastLoginAt: new Date(),
-    })
-    .returning();
-
-  // Vincula papel
-  let [targetRole] = await db.select().from(roles).where(eq(roles.name, assignedRole));
-  if (!targetRole) {
-    const [createdRole] = await db
-      .insert(roles)
-      .values({
-        name: assignedRole,
-        description: assignedRole === 'admin' ? 'Administrador do Sistema' : 'Aluno da Plataforma',
-      })
-      .onConflictDoNothing()
-      .returning();
-    targetRole = createdRole || (await db.select().from(roles).where(eq(roles.name, assignedRole)))[0];
-  }
-
-  if (targetRole) {
-    await db
-      .insert(userRoles)
-      .values({ userId: newUser.id, roleId: targetRole.id })
-      .onConflictDoNothing();
-  }
-
-
-  // Auditoria
-  await db.insert(auditLogs).values({
-    userId: newUser.id,
-    actorEmail: newUser.email,
-    action: 'user.registered_direct',
-    resource: 'users',
-    resourceId: newUser.id,
-    details: { email: newUser.email, role: assignedRole },
-  });
-
-  // Emite token JWT
-  const exp = Math.floor(Date.now() / 1000) + JWT_EXPIRES_IN_SECONDS;
-  const token = await sign(
-    {
-      sub: newUser.id,
-      email: newUser.email,
-      role: assignedRole,
-      exp,
-    },
-    JWT_SECRET,
-    'HS256'
-  );
-
-  setCookie(c, 'aprova_session', token, {
-    path: '/',
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'Lax',
-    maxAge: JWT_EXPIRES_IN_SECONDS,
-  });
-
-  return c.json(
-    {
-      success: true,
-      message: 'Conta criada com sucesso!',
-      data: {
-        token,
-        user: {
-          id: newUser.id,
-          name: newUser.name,
-          email: newUser.email,
-          role: assignedRole,
-          roles: [assignedRole],
-          avatarUrl: null,
-          allowedContestIds: newUser.allowedContestIds,
-        },
-      },
-    },
-    201
-  );
 });
 
