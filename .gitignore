@@ -30,7 +30,9 @@ dist-ssr
 coverage/
 drizzle/
 
-# Local Database
+# Local Database & Cloudflare Workers
 data/
 *.tsbuildinfo
+.wrangler/
+.dev.vars
 

@@ -13,3 +13,15 @@ not_found_handling = "single-page-application"
 [vars]
 APP_NAME = "APROVA"
 APP_ENV = "production"
+
+# Configuração de Banco de Dados Cloudflare D1 (opcional em produção)
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "aprova-db"
+# database_id = "seu-d1-database-id"
+
+# Configuração de Armazenamento Cloudflare R2 (opcional em produção)
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "aprova-documents"
+
