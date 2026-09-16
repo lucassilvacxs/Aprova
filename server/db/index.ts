@@ -156,8 +156,14 @@ export const db: any = new Proxy({} as any, {
 export async function executeRawSql(query: string, params: any[] = []): Promise<any> {
   initDb();
   if (neonHttpClient) {
-    const rows = await neonHttpClient(query, params);
-    return { rows: Array.isArray(rows) ? rows : [] };
+    let res: any;
+    if (typeof neonHttpClient.query === 'function') {
+      res = params && params.length > 0 ? await neonHttpClient.query(query, params) : await neonHttpClient.query(query);
+    } else {
+      res = await neonHttpClient(query);
+    }
+    const rows = Array.isArray(res) ? res : (res?.rows || []);
+    return { rows };
   }
   if (pgliteInstance) {
     if (params.length === 0) {
