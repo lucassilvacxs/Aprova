@@ -89,6 +89,15 @@ export async function ensureDbReady(): Promise<void> {
       // 1. Garante que todas as migrações SQL estão aplicadas
       await runMigrations();
 
+      // Auto-healing resiliente para colunas críticas do schema (garante google_id no Neon)
+      try {
+        await executeRawSql('ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "google_id" varchar(255);');
+        await executeRawSql('ALTER TABLE "users" ALTER COLUMN "password_hash" DROP NOT NULL;');
+        await executeRawSql('CREATE INDEX IF NOT EXISTS "idx_users_google_id" ON "users" USING btree ("google_id");');
+      } catch (healErr) {
+        // Ignora se a coluna já existir
+      }
+
       // 2. Verifica se o banco possui papéis/usuários iniciais
       let needsSeed = false;
       try {
