@@ -55,9 +55,15 @@ export function initDb(overrideUrl?: string) {
     dbInstance = drizzleNeonHttp(neonHttpClient, { schema });
     console.log('⚡ Banco de dados: Conectado via HTTP Serverless (Neon/Cloudflare).');
   } else if (isCloudflareOrEdge && !dbUrl) {
-    console.error('❌ ERRO CRÍTICO CLOUDFLARE: DATABASE_URL não configurada no painel da Cloudflare!');
-    pgliteInstance = new PGlite();
-    dbInstance = drizzlePglite(pgliteInstance, { schema });
+    console.warn('⚠️ AVISO CLOUDFLARE: DATABASE_URL não configurada no painel da Cloudflare. Usando banco em memória temporário.');
+    try {
+      pgliteInstance = new PGlite('memory://');
+      dbInstance = drizzlePglite(pgliteInstance, { schema });
+    } catch (edgeErr) {
+      console.error('❌ Falha ao instanciar PGlite no Edge:', edgeErr);
+      pgliteInstance = new PGlite();
+      dbInstance = drizzlePglite(pgliteInstance, { schema });
+    }
   } else if (useRemotePostgres) {
     poolInstance = new Pool({
       connectionString: dbUrl,
